@@ -3,19 +3,23 @@ const User = require('../models/User');
 const { auth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
-// Get all users (HO Team + Admin)
+// Get all users (HO Team + Admin) — supports search, userType, status, branch filters
 router.get('/', auth, requireRole('Head Office Team', 'System Administrator'), async (req, res) => {
   try {
     const { status, userType, branch, search } = req.query;
     const filter = {};
-    if (status) filter.status = status;
+    if (status)   filter.status = status;
     if (userType) filter.userType = userType;
-    if (branch) filter.branch = branch;
-    if (search) filter.$or = [
-      { fullName: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } }
+    if (branch)   filter.branch = { $regex: branch, $options: 'i' };
+    if (search)   filter.$or = [
+      { fullName:     { $regex: search, $options: 'i' } },
+      { email:        { $regex: search, $options: 'i' } },
+      { mobileNumber: { $regex: search, $options: 'i' } },
+      { jobRole:      { $regex: search, $options: 'i' } },
     ];
-    const users = await User.find(filter).populate('reportingCoordinator', 'fullName').sort({ createdAt: -1 });
+    const users = await User.find(filter)
+      .populate('reportingCoordinator', 'fullName')
+      .sort({ createdAt: -1 });
     res.json(users);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -32,7 +36,7 @@ router.get('/pending', auth, requireRole('Head Office Team', 'System Administrat
   }
 });
 
-// Get technicians by branch (for service coordinator)
+// Get technicians by branch
 router.get('/technicians', auth, async (req, res) => {
   try {
     const branch = req.query.branch || req.user.branch;
@@ -47,12 +51,12 @@ router.get('/technicians', auth, async (req, res) => {
   }
 });
 
-// Get coordinators by branch
+// Get coordinators — filtered by branch if provided
 router.get('/coordinators', async (req, res) => {
   try {
     const { branch } = req.query;
     const filter = { userType: 'Service Coordinator', status: 'Approved' };
-    if (branch) filter.branch = branch;
+    if (branch) filter.branch = { $regex: branch, $options: 'i' };
     const coordinators = await User.find(filter).select('fullName branch');
     res.json(coordinators);
   } catch (err) {
@@ -60,18 +64,16 @@ router.get('/coordinators', async (req, res) => {
   }
 });
 
-// Approve user
+// Approve user — no password needed, user set their own at registration
 router.patch('/:id/approve', auth, requireRole('Head Office Team', 'System Administrator'), async (req, res) => {
   try {
-    const { password } = req.body;
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (!user.password) return res.status(400).json({ error: 'User has no password set. Ask them to re-register.' });
 
     user.status = 'Approved';
     user.approvedBy = req.user._id;
     user.approvedAt = new Date();
-    if (password) user.password = password;
-
     await user.save();
     res.json({ message: 'User approved.', user });
   } catch (err) {
@@ -93,7 +95,7 @@ router.patch('/:id/reject', auth, requireRole('Head Office Team', 'System Admini
   }
 });
 
-// Update user
+// Update user (Admin only)
 router.patch('/:id', auth, requireRole('System Administrator'), async (req, res) => {
   try {
     const updates = req.body;
@@ -106,7 +108,7 @@ router.patch('/:id', auth, requireRole('System Administrator'), async (req, res)
   }
 });
 
-// Stats for dashboard
+// Stats summary
 router.get('/stats/summary', auth, requireRole('Head Office Team', 'System Administrator'), async (req, res) => {
   try {
     const [total, pending, approved, rejected] = await Promise.all([

@@ -3,39 +3,45 @@ const ServiceRecord = require('../models/ServiceRecord');
 const { auth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
-// Get all service records
+// Get all service records — with sorting support
 router.get('/', auth, async (req, res) => {
   try {
-    const { status, branch, brand, category, search, page = 1, limit = 20, startDate, endDate } = req.query;
+    const { status, branch, brand, category, search, page = 1, limit = 20, startDate, endDate, sortBy = 'createdAt', sortDir = 'desc' } = req.query;
     const filter = {};
 
-    // Branch filter: coordinators/technicians only see their branch
+    // Branch filter: coordinators/technicians/branch users only see their branch
     if (['Service Coordinator', 'Service Technician', 'Branch User'].includes(req.user.userType)) {
       filter.branch = req.user.branch;
     } else if (branch) {
       filter.branch = branch;
     }
 
-    if (status) filter.status = status;
-    if (brand) filter.brand = brand;
+    if (status)   filter.status = status;
+    if (brand)    filter.brand = brand;
     if (category) filter.category = category;
     if (startDate || endDate) {
       filter.serviceDate = {};
       if (startDate) filter.serviceDate.$gte = new Date(startDate);
-      if (endDate) filter.serviceDate.$lte = new Date(endDate);
+      if (endDate)   filter.serviceDate.$lte = new Date(endDate);
     }
     if (search) {
       filter.$or = [
-        { serviceNumber: { $regex: search, $options: 'i' } },
-        { brand: { $regex: search, $options: 'i' } },
+        { serviceNumber:    { $regex: search, $options: 'i' } },
+        { brand:            { $regex: search, $options: 'i' } },
         { orionDescription: { $regex: search, $options: 'i' } },
-        { 'technician.name': { $regex: search, $options: 'i' } }
+        { 'technician.name':{ $regex: search, $options: 'i' } }
       ];
     }
 
+    // Build sort object — support dot notation e.g. "technician.name"
+    const allowedSortFields = ['serviceNumber', 'serviceDate', 'branch', 'brand', 'category', 'status', 'technician.name', 'createdAt', 'openedAt', 'closedAt'];
+    const sortField = allowedSortFields.includes(sortBy) ? sortBy : 'createdAt';
+    const sortOrder = sortDir === 'asc' ? 1 : -1;
+    const sort = { [sortField]: sortOrder };
+
     const skip = (page - 1) * limit;
     const [records, total] = await Promise.all([
-      ServiceRecord.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit))
+      ServiceRecord.find(filter).sort(sort).skip(skip).limit(Number(limit))
         .populate('createdBy', 'fullName'),
       ServiceRecord.countDocuments(filter)
     ]);
@@ -164,18 +170,19 @@ router.patch('/:id', auth, requireRole('Service Coordinator', 'Head Office Team'
   }
 });
 
-// Export records
+// Export records as CSV (kept for backward compatibility)
 router.get('/export/csv', auth, async (req, res) => {
   try {
     const branchFilter = ['Service Coordinator', 'Service Technician', 'Branch User'].includes(req.user.userType)
       ? { branch: req.user.branch } : {};
     const records = await ServiceRecord.find(branchFilter).sort({ createdAt: -1 });
 
-    const headers = ['Service No', 'Date', 'Branch', 'Brand', 'Category', 'Orion Code', 'Orion Description', 'Sub-Category', 'Technician', 'Status', 'Opened At', 'Closed At', 'Remarks'];
+    const headers = ['Service No','Date','Branch','Brand','Category','Orion Code','Orion Description','Sub-Category','Technician','Status','Opened At','Closed At','Remarks','Created By'];
     const rows = records.map(r => [
       r.serviceNumber, r.serviceDate?.toISOString().split('T')[0], r.branch,
       r.brand, r.category, r.orionCode, r.orionDescription, r.subCategory,
-      r.technician?.name, r.status, r.openedAt?.toISOString(), r.closedAt?.toISOString(), r.remarks
+      r.technician?.name, r.status, r.openedAt?.toISOString(), r.closedAt?.toISOString(),
+      r.remarks, r.createdByName
     ]);
 
     const csv = [headers, ...rows].map(row => row.map(v => `"${v || ''}"`).join(',')).join('\n');

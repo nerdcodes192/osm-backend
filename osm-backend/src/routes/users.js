@@ -81,15 +81,12 @@ router.patch('/:id/approve', auth, requireRole('Head Office Team', 'System Admin
   }
 });
 
-// Reject user
+// Reject user — permanently delete from database so they can re-register if needed
 router.patch('/:id/reject', auth, requireRole('Head Office Team', 'System Administrator'), async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
+    const user = await User.findByIdAndDelete(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found.' });
-    user.status = 'Rejected';
-    user.rejectionReason = req.body.reason || '';
-    await user.save();
-    res.json({ message: 'User rejected.', user });
+    res.json({ message: 'User rejected and removed successfully.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -40,6 +40,25 @@ const serviceRecordSchema = new mongoose.Schema({
   remarks: { type: String, trim: true },
   openedAt: { type: Date },
   closedAt: { type: Date },
+  // Optional customer information
+  customer: {
+    dateOfPurchase: { type: Date },
+    name:           { type: String, trim: true },
+    address:        { type: String, trim: true },
+    phone:          { type: String, trim: true }
+  },
+  // Optional dealer information
+  dealer: {
+    dateOfPurchase: { type: Date },
+    name:           { type: String, trim: true },
+    address:        { type: String, trim: true },
+    phone:          { type: String, trim: true }
+  },
+  // Optional product information
+  productInfo: {
+    location: { type: String, trim: true },
+    serialNo: { type: String, trim: true }
+  },
   statusHistory: [statusHistorySchema],
   technicianHistory: [technicianHistorySchema],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },

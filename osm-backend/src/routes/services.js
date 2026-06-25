@@ -143,7 +143,7 @@ router.patch('/:id', auth, requireRole('Service Coordinator', 'Head Office Team'
     const record = await ServiceRecord.findById(req.params.id);
     if (!record) return res.status(404).json({ error: 'Record not found.' });
 
-    const { status, remarks, ...otherUpdates } = req.body;
+    const { status, remarks, technician, ...otherUpdates } = req.body;
 
     if (status && status !== record.status) {
       record.statusHistory.push({
@@ -157,6 +157,27 @@ router.patch('/:id', auth, requireRole('Service Coordinator', 'Head Office Team'
       record.status = status;
       if (status === 'Opened' && !record.openedAt) record.openedAt = new Date();
       if (status === 'Closed' && !record.closedAt) record.closedAt = new Date();
+    }
+
+    // Handle technician reassignment
+    if (technician && technician.name) {
+      const prevName = record.technician?.name;
+      const prevId   = record.technician?.id;
+      const newName  = technician.name.trim();
+      const newId    = technician.id || undefined;
+
+      if (newName !== prevName) {
+        record.technicianHistory.push({
+          previousTechnicianId:   prevId   || undefined,
+          previousTechnicianName: prevName || null,
+          newTechnicianId:        newId    || undefined,
+          newTechnicianName:      newName,
+          changedBy:     req.user._id,
+          changedByName: req.user.fullName,
+          changedAt:     new Date()
+        });
+        record.technician = { id: newId, name: newName };
+      }
     }
 
     if (remarks !== undefined) record.remarks = remarks;

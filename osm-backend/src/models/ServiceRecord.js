@@ -9,6 +9,16 @@ const statusHistorySchema = new mongoose.Schema({
   remarks: String
 }, { _id: false });
 
+const technicianHistorySchema = new mongoose.Schema({
+  previousTechnicianId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  previousTechnicianName: String,
+  newTechnicianId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  newTechnicianName: String,
+  changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  changedByName: String,
+  changedAt: { type: Date, default: Date.now }
+}, { _id: false });
+
 const serviceRecordSchema = new mongoose.Schema({
   serviceNumber: { type: String, unique: true },
   serviceDate: { type: Date, required: true },
@@ -31,6 +41,7 @@ const serviceRecordSchema = new mongoose.Schema({
   openedAt: { type: Date },
   closedAt: { type: Date },
   statusHistory: [statusHistorySchema],
+  technicianHistory: [technicianHistorySchema],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   createdByName: { type: String },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

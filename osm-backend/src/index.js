@@ -35,11 +35,12 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
+// Bind port immediately so Render detects it
+app.listen(PORT, () => console.log(`🚀 OSM API running on port ${PORT}`));
+
+// Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log('✅ Connected to MongoDB Atlas');
-    app.listen(PORT, () => console.log(`🚀 OSM API running on port ${PORT}`));
-  })
+  .then(() => console.log('✅ Connected to MongoDB Atlas'))
   .catch(err => {
     console.error('❌ MongoDB connection error:', err.message);
     process.exit(1);

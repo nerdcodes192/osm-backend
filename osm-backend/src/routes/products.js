@@ -10,10 +10,76 @@ const upload  = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20
 
 const HO_ADMIN = ['Head Office Team', 'System Administrator'];
 
-// ─── Required columns in uploaded Excel ─────────────────────────────────────
-const REQUIRED_COLS = ['CATEGORY', 'BRAND', 'ORION_CODE', 'ORION_DESCRIPTION', 'SUB_CATEGORY'];
+// ─── Flexible header matching ────────────────────────────────────────────────
+// Normalises any header variation to a standard key
+// "ORION CODE", "Orion Code", "orion-code", "ORION_CODE" → "ORION_CODE"
+function normaliseHeader(h) {
+  return String(h || '').trim().toUpperCase().replace(/[\s\-]+/g, '_');
+}
 
-// ─── Helper: normalise a raw Excel row → product object ─────────────────────
+// Maps normalised header → standard column name
+const COLUMN_MAP = {
+  'CATEGORY':          'CATEGORY',
+  'BRAND':             'BRAND',
+  'ORION_CODE':        'ORION_CODE',
+  'ORION_DESCRIPTION': 'ORION_DESCRIPTION',
+  'SUB_CATEGORY':      'SUB_CATEGORY',
+  'SUB_CAT':           'SUB_CATEGORY',
+};
+
+const REQUIRED_STANDARD = ['CATEGORY', 'BRAND', 'ORION_CODE', 'ORION_DESCRIPTION', 'SUB_CATEGORY'];
+
+// ─── Parse sheet with flexible headers + skip blank leading rows/cols ────────
+function parseSheet(ws) {
+  // sheet_to_json with header:1 gives raw arrays, we find the header row ourselves
+  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+  // Find the first row that contains at least 2 non-empty cells (the header row)
+  let headerRowIdx = -1;
+  let headerMap    = {};   // original header text → standard column name
+
+  for (let i = 0; i < raw.length; i++) {
+    const row       = raw[i];
+    const nonEmpty  = row.filter(c => c !== '' && c !== null && c !== undefined);
+    if (nonEmpty.length < 2) continue;
+
+    // Try to match at least 2 of our known columns
+    const tentativeMap = {};
+    row.forEach(cell => {
+      const norm = normaliseHeader(cell);
+      if (COLUMN_MAP[norm]) tentativeMap[String(cell).trim()] = COLUMN_MAP[norm];
+    });
+
+    if (Object.keys(tentativeMap).length >= 2) {
+      headerRowIdx = i;
+      headerMap    = tentativeMap;
+      break;
+    }
+  }
+
+  if (headerRowIdx === -1) return { headerMap: {}, rows: [] };
+
+  // Build data rows from rows after the header
+  const headers = raw[headerRowIdx];
+  const rows = [];
+
+  for (let i = headerRowIdx + 1; i < raw.length; i++) {
+    const cells = raw[i];
+    // Skip fully blank rows
+    if (cells.every(c => c === '' || c === null || c === undefined)) continue;
+
+    const rowObj = {};
+    headers.forEach((h, colIdx) => {
+      const std = headerMap[String(h).trim()];
+      if (std) rowObj[std] = cells[colIdx] !== undefined ? cells[colIdx] : '';
+    });
+    rows.push(rowObj);
+  }
+
+  return { headerMap, rows };
+}
+
+// ─── Helper: normalise a parsed row → product object ────────────────────────
 function rowToProduct(row) {
   return {
     category:         String(row['CATEGORY']         || '').trim().toUpperCase(),
@@ -31,10 +97,10 @@ router.get('/', auth, async (req, res) => {
   try {
     const { search, brand, category, orionCode, subCategory, page = 1, limit = 50 } = req.query;
     const filter = {};
-    if (brand)       filter.brand    = { $regex: brand, $options: 'i' };
-    if (category)    filter.category = { $regex: category, $options: 'i' };
-    if (orionCode)   filter.orionCode = { $regex: orionCode, $options: 'i' };
-    if (subCategory) filter.subCategory = { $regex: subCategory, $options: 'i' };
+    if (brand)       filter.brand        = { $regex: brand,       $options: 'i' };
+    if (category)    filter.category     = { $regex: category,    $options: 'i' };
+    if (orionCode)   filter.orionCode    = { $regex: orionCode,   $options: 'i' };
+    if (subCategory) filter.subCategory  = { $regex: subCategory, $options: 'i' };
     if (search) {
       filter.$or = [
         { brand:            { $regex: search, $options: 'i' } },
@@ -78,9 +144,8 @@ router.get('/meta', auth, async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 router.get('/template', auth, requireRole(...HO_ADMIN), (req, res) => {
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([REQUIRED_COLS]);
-  // widen columns for readability
-  ws['!cols'] = REQUIRED_COLS.map(() => ({ wch: 24 }));
+  const ws = XLSX.utils.aoa_to_sheet([['CATEGORY', 'BRAND', 'ORION CODE', 'ORION DESCRIPTION', 'SUB-CATEGORY']]);
+  ws['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 36 }, { wch: 16 }];
   XLSX.utils.book_append_sheet(wb, ws, 'Product Master');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -98,25 +163,29 @@ router.post('/import/preview', auth, requireRole(...HO_ADMIN), upload.single('fi
 
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
     const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
 
-    if (!rows.length) return res.status(400).json({ error: 'The Excel file is empty.' });
+    const { headerMap, rows } = parseSheet(ws);
 
-    // Validate columns
-    const firstRow = rows[0];
-    const missing  = REQUIRED_COLS.filter(c => !(c in firstRow));
+    if (!rows.length) return res.status(400).json({ error: 'The Excel file is empty or no data rows found.' });
+
+    // Check which required columns were detected
+    const foundStandard = new Set(Object.values(headerMap));
+    const missing = REQUIRED_STANDARD.filter(c => !foundStandard.has(c));
     if (missing.length) {
-      return res.status(400).json({ error: `Missing required columns: ${missing.join(', ')}` });
+      return res.status(400).json({
+        error: `Missing required columns: ${missing.join(', ')}. ` +
+               `Detected columns: ${Object.keys(headerMap).join(', ') || 'none'}`
+      });
     }
 
     // Parse & validate each row
-    const valid    = [];
-    const invalid  = [];
-    const dupMap   = new Map();   // orionDescription → first row index
-    const dupRows  = [];
+    const valid   = [];
+    const invalid = [];
+    const dupMap  = new Map();
+    const dupRows = [];
 
     rows.forEach((raw, idx) => {
-      const p = rowToProduct(raw);
+      const p    = rowToProduct(raw);
       const errs = [];
       if (!p.brand)            errs.push('BRAND is empty');
       if (!p.category)         errs.push('CATEGORY is empty');
@@ -132,7 +201,7 @@ router.post('/import/preview', auth, requireRole(...HO_ADMIN), upload.single('fi
       }
     });
 
-    // Cross-check with existing DB to flag updates vs new
+    // Cross-check with existing DB
     const existingDescs = new Set(
       (await Product.find({}, 'orionDescription').lean()).map(p => p.orionDescription.toLowerCase())
     );
@@ -140,18 +209,17 @@ router.post('/import/preview', auth, requireRole(...HO_ADMIN), upload.single('fi
     const updatedProducts = valid.filter(p =>  existingDescs.has(p.orionDescription.toLowerCase()));
 
     res.json({
-      fileName:        req.file.originalname,
-      totalRows:       rows.length,
-      validProducts:   valid.length,
-      newProducts:     newProducts.length,
-      updatedProducts: updatedProducts.length,
-      duplicateRows:   dupRows.length,
-      invalidRows:     invalid.length,
-      preview:         valid.slice(0, 20),   // first 20 for UI preview table
-      invalidDetails:  invalid.slice(0, 20),
-      duplicateDetails:dupRows.slice(0, 20),
-      // pass parsed rows back so /confirm can use them without re-parsing
-      _parsedRows:     valid,
+      fileName:         req.file.originalname,
+      totalRows:        rows.length,
+      validProducts:    valid.length,
+      newProducts:      newProducts.length,
+      updatedProducts:  updatedProducts.length,
+      duplicateRows:    dupRows.length,
+      invalidRows:      invalid.length,
+      preview:          valid.slice(0, 20),
+      invalidDetails:   invalid.slice(0, 20),
+      duplicateDetails: dupRows.slice(0, 20),
+      _parsedRows:      valid,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -160,9 +228,8 @@ router.post('/import/preview', auth, requireRole(...HO_ADMIN), upload.single('fi
 
 // ════════════════════════════════════════════════════════════════════════════
 //  POST /api/products/import/confirm
-//  Upserts products — new ones are inserted, existing ones are updated,
+//  Upserts products — new ones inserted, existing ones updated,
 //  products NOT in the sheet are left completely untouched.
-//  Body: { parsedRows: [...], fileName, totalRows, newProducts, updatedProducts, failedRecords }
 // ════════════════════════════════════════════════════════════════════════════
 router.post('/import/confirm', auth, requireRole(...HO_ADMIN), async (req, res) => {
   try {
@@ -171,8 +238,6 @@ router.post('/import/confirm', auth, requireRole(...HO_ADMIN), async (req, res) 
       return res.status(400).json({ error: 'No product data to import.' });
     }
 
-    // ── Upsert: match on orionDescription, update fields, insert if missing ──
-    // Products NOT in this sheet are untouched — they stay in the DB as-is.
     const ops = parsedRows.map(p => ({
       updateOne: {
         filter: { orionDescription: p.orionDescription },
@@ -187,7 +252,7 @@ router.post('/import/confirm', auth, requireRole(...HO_ADMIN), async (req, res) 
             addedByName:      req.user.fullName,
           }
         },
-        upsert: true,   // insert if no match found
+        upsert: true,
       }
     }));
 
@@ -196,15 +261,14 @@ router.post('/import/confirm', auth, requireRole(...HO_ADMIN), async (req, res) 
     const inserted = result.upsertedCount  || 0;
     const modified = result.modifiedCount  || 0;
 
-    // ── Log import history ───────────────────────────────────────────────
     await ImportHistory.create({
       fileName:        fileName || 'unknown.xlsx',
       importedBy:      req.user._id,
       importedByName:  req.user.fullName,
-      totalRecords:    totalRows      || parsedRows.length,
-      newProducts:     newProducts    !== undefined ? newProducts    : inserted,
+      totalRecords:    totalRows       || parsedRows.length,
+      newProducts:     newProducts     !== undefined ? newProducts     : inserted,
       updatedProducts: updatedProducts !== undefined ? updatedProducts : modified,
-      failedRecords:   failedRecords  || 0,
+      failedRecords:   failedRecords   || 0,
       status:          'success',
     });
 

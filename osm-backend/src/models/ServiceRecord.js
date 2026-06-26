@@ -66,12 +66,42 @@ const serviceRecordSchema = new mongoose.Schema({
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 
-// Auto-generate service number
+// Auto-generate service number — uses highest existing number for the year
+// to avoid collisions from deletions or concurrent inserts
 serviceRecordSchema.pre('save', async function(next) {
   if (!this.serviceNumber) {
-    const count = await mongoose.model('ServiceRecord').countDocuments();
     const year = new Date().getFullYear();
-    this.serviceNumber = `OSM-${year}-${String(count + 1).padStart(5, '0')}`;
+    const prefix = `OSM-${year}-`;
+    const Model = mongoose.model('ServiceRecord');
+
+    // Find highest-numbered record for this year
+    const last = await Model.findOne(
+      { serviceNumber: { $regex: `^${prefix}` } },
+      { serviceNumber: 1 },
+      { sort: { serviceNumber: -1 } }
+    ).lean();
+
+    let nextNum = 1;
+    if (last) {
+      const parts = last.serviceNumber.split('-');
+      const parsed = parseInt(parts[parts.length - 1], 10);
+      if (!isNaN(parsed)) nextNum = parsed + 1;
+    }
+
+    // Retry up to 5 times in case of a concurrent insert collision
+    let attempts = 0;
+    while (attempts < 5) {
+      const candidate = `${prefix}${String(nextNum).padStart(5, '0')}`;
+      const exists = await Model.exists({ serviceNumber: candidate });
+      if (!exists) { this.serviceNumber = candidate; break; }
+      nextNum++;
+      attempts++;
+    }
+
+    // Last-resort fallback: timestamp+random guarantees uniqueness
+    if (!this.serviceNumber) {
+      this.serviceNumber = `${prefix}${Date.now().toString(36).toUpperCase()}`;
+    }
   }
   if (this.status === 'Opened' && !this.openedAt) {
     this.openedAt = new Date();

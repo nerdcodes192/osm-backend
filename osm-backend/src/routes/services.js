@@ -52,11 +52,34 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
+// Get distinct list of branches (used to populate branch dropdowns).
+// Available to everyone — Service Coordinators/Technicians/Branch Users don't
+// see the dropdown in the UI, but the list itself isn't sensitive.
+router.get('/meta/branches', auth, async (req, res) => {
+  try {
+    const branches = await ServiceRecord.distinct('branch');
+    res.json({ branches: branches.filter(Boolean).sort((a, b) => a.localeCompare(b)) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get dashboard stats
 router.get('/stats/dashboard', auth, async (req, res) => {
   try {
-    const branchFilter = ['Service Coordinator', 'Service Technician', 'Branch User'].includes(req.user.userType)
-      ? { branch: req.user.branch } : {};
+    const isFieldRole = ['Service Coordinator', 'Service Technician', 'Branch User'].includes(req.user.userType);
+    const isHO = ['Head Office Team', 'System Administrator'].includes(req.user.userType);
+
+    // Field roles are always locked to their own branch (the branch query
+    // param, if any, is ignored for them — this is a security boundary, not
+    // just a UI default). HO/Admin users see everything by default, or a
+    // single branch when they pick one from the dropdown.
+    let branchFilter = {};
+    if (isFieldRole) {
+      branchFilter = { branch: req.user.branch };
+    } else if (isHO && req.query.branch) {
+      branchFilter = { branch: req.query.branch };
+    }
 
     const [total, opened, pending, closed] = await Promise.all([
       ServiceRecord.countDocuments(branchFilter),
@@ -65,9 +88,10 @@ router.get('/stats/dashboard', auth, async (req, res) => {
       ServiceRecord.countDocuments({ ...branchFilter, status: 'Closed' })
     ]);
 
-    // By branch (HO only)
+    // By branch (HO only) — always unfiltered by branch so the breakdown
+    // stays meaningful even when a single branch is selected above.
     let byBranch = [];
-    if (['Head Office Team', 'System Administrator'].includes(req.user.userType)) {
+    if (isHO) {
       byBranch = await ServiceRecord.aggregate([
         { $group: { _id: '$branch', count: { $sum: 1 } } },
         { $sort: { count: -1 } }

@@ -66,6 +66,15 @@ const serviceRecordSchema = new mongoose.Schema({
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 
+// Indexes to keep branch-wise dashboard counts and filtered list queries fast
+// at the database level as record volume grows.
+serviceRecordSchema.index({ branch: 1 });
+serviceRecordSchema.index({ status: 1 });
+serviceRecordSchema.index({ createdAt: -1 });
+// Compound index matches the most common dashboard/list query shape
+// (filter by branch + status, sorted/bucketed by createdAt).
+serviceRecordSchema.index({ branch: 1, status: 1, createdAt: -1 });
+
 // Auto-generate service number — uses highest existing number for the year
 // to avoid collisions from deletions or concurrent inserts
 serviceRecordSchema.pre('save', async function(next) {

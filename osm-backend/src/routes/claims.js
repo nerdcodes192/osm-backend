@@ -1,6 +1,7 @@
 const express   = require('express');
 const Claim     = require('../models/Claim');
 const SparePart = require('../models/SparePart');
+const Product   = require('../models/Product');
 const { auth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
@@ -17,13 +18,32 @@ async function rememberSparePart(name, user) {
   } catch (e) { /* non-fatal */ }
 }
 
+// Validates the submitted Brand/Category/Orion Code/Orion Description against
+// the Product Master and returns the matching product (with Sub Category)
+// so the server — not just the UI — enforces "only valid combinations accepted".
+async function resolveProductMasterMatch({ brand, category, orionCode, orionDescription }) {
+  if (!brand || !category) return { error: 'Brand and Category are required.' };
+  if (!orionCode && !orionDescription) return { error: 'Either Orion Code or Orion Description must be selected.' };
+
+  const filter = {
+    brand: new RegExp(`^${String(brand).trim()}$`, 'i'),
+    category: new RegExp(`^${String(category).trim()}$`, 'i'),
+  };
+  if (orionCode) filter.orionCode = new RegExp(`^${String(orionCode).trim()}$`, 'i');
+  else filter.orionDescription = new RegExp(`^${String(orionDescription).trim()}$`, 'i');
+
+  const match = await Product.findOne(filter);
+  if (!match) return { error: 'Selected Brand/Category/Orion Code/Orion Description combination was not found in the Product Master.' };
+  return { match };
+}
+
 // GET /api/claims — search/filter/sort/paginate.
 // Service Coordinators only see their own branch; HO/Admin see all
 // (optionally narrowed via ?branch=).
 router.get('/', auth, async (req, res) => {
   try {
     const {
-      search, status, resolutionStatus, product, branch, location,
+      search, status, resolutionStatus, brand, category, branch, location,
       startDate, endDate, tatMin, tatMax,
       page = 1, limit = 20, sortBy = 'createdAt', sortDir = 'desc'
     } = req.query;
@@ -37,7 +57,8 @@ router.get('/', auth, async (req, res) => {
 
     if (status)           filter.status = status;
     if (resolutionStatus) filter.resolutionStatus = resolutionStatus;
-    if (product)           filter.product = { $regex: product, $options: 'i' };
+    if (brand)             filter.brand = brand;
+    if (category)          filter.category = category;
     if (location)          filter.location = location;
     if (startDate || endDate) {
       filter.complaintDate = {};
@@ -50,7 +71,9 @@ router.get('/', auth, async (req, res) => {
         { caseId:           { $regex: search, $options: 'i' } },
         { customerName:     { $regex: search, $options: 'i' } },
         { unitSerialNumber: { $regex: search, $options: 'i' } },
-        { product:           { $regex: search, $options: 'i' } },
+        { brand:             { $regex: search, $options: 'i' } },
+        { orionCode:         { $regex: search, $options: 'i' } },
+        { orionDescription:  { $regex: search, $options: 'i' } },
         { rma:               { $regex: search, $options: 'i' } },
       ];
     }
@@ -98,9 +121,17 @@ router.get('/:id', auth, async (req, res) => {
 // Create — Service Coordinators (their own branch only) or Admin
 router.post('/', auth, requireRole('Service Coordinator', 'System Administrator'), async (req, res) => {
   try {
+    const { match, error } = await resolveProductMasterMatch(req.body);
+    if (error) return res.status(400).json({ error });
+
     const branch = req.user.userType === 'Service Coordinator' ? req.user.branch : (req.body.branch || req.user.branch);
     const claim = new Claim({
       ...req.body,
+      brand: match.brand,
+      category: match.category,
+      orionCode: match.orionCode,
+      orionDescription: match.orionDescription,
+      subCategory: match.subCategory,
       branch,
       createdBy: req.user._id,
       createdByName: req.user.fullName,
@@ -123,6 +154,23 @@ router.patch('/:id', auth, requireRole('Service Coordinator', 'System Administra
     }
 
     const { branch, claimNumber, createdBy, createdByName, ...updates } = req.body;
+
+    // Re-validate against the Product Master whenever any product field changes
+    if (updates.brand || updates.category || updates.orionCode || updates.orionDescription) {
+      const { match, error } = await resolveProductMasterMatch({
+        brand: updates.brand ?? claim.brand,
+        category: updates.category ?? claim.category,
+        orionCode: updates.orionCode,
+        orionDescription: updates.orionDescription,
+      });
+      if (error) return res.status(400).json({ error });
+      updates.brand = match.brand;
+      updates.category = match.category;
+      updates.orionCode = match.orionCode;
+      updates.orionDescription = match.orionDescription;
+      updates.subCategory = match.subCategory;
+    }
+
     Object.assign(claim, updates);
     claim.updatedBy = req.user._id;
 
@@ -152,9 +200,9 @@ router.get('/export/csv', auth, async (req, res) => {
     const filter = req.user.userType === 'Service Coordinator' ? { branch: req.user.branch } : {};
     const claims = await Claim.find(filter).sort({ createdAt: -1 });
 
-    const headers = ['Claim Number','Customer Name','Location','Case ID','RMA','Model Number','Product','Defect Component','Unit Serial Number','Defect Spare Parts','Part Code','Status','Resolution Status','TAT (days)','Complaint Date','Resolution Date','Branch','Supply Remarks','Created By'];
+    const headers = ['Claim Number','Customer Name','Location','Case ID','RMA','Brand','Category','Orion Code','Orion Description','Sub Category','Defect Component','Unit Serial Number','Defect Spare Parts','Part Code','Status','Resolution Status','TAT (days)','Complaint Date','Resolution Date','Branch','Supply Remarks','Created By'];
     const rows = claims.map(c => [
-      c.claimNumber, c.customerName, c.location, c.caseId, c.rma, c.modelNumber, c.product,
+      c.claimNumber, c.customerName, c.location, c.caseId, c.rma, c.brand, c.category, c.orionCode, c.orionDescription, c.subCategory,
       c.defectComponent, c.unitSerialNumber, c.defectSpareParts, c.partCodeNumber,
       c.status, c.resolutionStatus, c.tat ?? '', c.complaintDate?.toISOString().split('T')[0],
       c.resolutionDate?.toISOString().split('T')[0], c.branch, c.supplyRemarks, c.createdByName

@@ -9,9 +9,14 @@ const claimSchema = new mongoose.Schema({
   caseId:       { type: String, trim: true },
   rma:          { type: String, trim: true },
 
-  // Technical information
-  modelNumber:      { type: String, trim: true },
-  product:           { type: String, trim: true }, // Product Master dropdown value (Orion Description)
+  // Technical information — Product Master hierarchy (Brand -> Category ->
+  // Orion Code / Orion Description, kept in sync -> Sub Category auto-filled).
+  // Only valid Product Master combinations are accepted; no manual entry.
+  brand:             { type: String, trim: true, required: true },
+  category:          { type: String, trim: true, required: true },
+  orionCode:         { type: String, trim: true },
+  orionDescription:  { type: String, trim: true },
+  subCategory:       { type: String, trim: true },
   defectComponent:  { type: String, trim: true },
   unitSerialNumber: { type: String, trim: true },
   defectSpareParts: { type: String, trim: true }, // searchable dropdown w/ manual entry, saved to SparePart master
@@ -51,6 +56,9 @@ claimSchema.set('toObject', { virtuals: true });
 
 // Auto-generate claim number — sequential per calendar year, resets yearly
 claimSchema.pre('save', async function (next) {
+  if (!this.orionCode && !this.orionDescription) {
+    return next(new Error('Either Orion Code or Orion Description must be selected.'));
+  }
   if (!this.claimNumber) {
     const year = new Date().getFullYear();
     const prefix = `CLM-${year}-`;

@@ -34,12 +34,40 @@ const serviceRecordSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Opened', 'Pending', 'Closed'],
+    enum: ['Opened', 'Pending', 'SRN', 'Closed'],
     default: 'Opened'
   },
   remarks: { type: String, trim: true },
   openedAt: { type: Date },
   closedAt: { type: Date },
+  // Optional — shown only when Service Status is updated to Closed
+  sparePartUsed:        { type: String, trim: true },
+  sparePartConsumption: { type: String, trim: true },
+  // SRN — required only while Service Status = SRN, but retained afterwards for audit
+  srn: {
+    srnNumber:              { type: String, trim: true },
+    customerInvoiceNumber:  { type: String, trim: true },
+    customerInvoiceDate:    { type: Date },
+    dealerInvoiceNumber:    { type: String, trim: true },
+    dealerInvoiceDate:      { type: Date },
+  },
+  // Happy Call / customer feedback — one record per closed service
+  feedback: {
+    customerFeedback:   { type: String, enum: ['Satisfied', 'Partially Satisfied', 'Unsatisfied'] },
+    remarks:             { type: String, trim: true },
+    resolution:          { type: String, trim: true }, // Unit Okay, Contact Not Reachable, Not Responding, Wrong Number, Switched Off, or manual entry
+    productRating:       { type: Number, min: 0, max: 100 },
+    firstTimeUser:       { type: Boolean },
+    engineerRating:      { type: Number, min: 1, max: 5 },
+    engineerCollectedMoney: { type: Boolean },
+    amountCollected:     { type: Number },
+    submittedBy:         { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    submittedByName:      { type: String },
+    submittedAt:          { type: Date },
+    updatedBy:            { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updatedByName:         { type: String },
+    updatedAt:             { type: Date }
+  },
   // Optional customer information
   customer: {
     dateOfPurchase: { type: Date },
@@ -71,6 +99,7 @@ const serviceRecordSchema = new mongoose.Schema({
 serviceRecordSchema.index({ branch: 1 });
 serviceRecordSchema.index({ status: 1 });
 serviceRecordSchema.index({ createdAt: -1 });
+serviceRecordSchema.index({ 'srn.srnNumber': 1 });
 // Compound index matches the most common dashboard/list query shape
 // (filter by branch + status, sorted/bucketed by createdAt).
 serviceRecordSchema.index({ branch: 1, status: 1, createdAt: -1 });

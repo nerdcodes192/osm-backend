@@ -1,12 +1,26 @@
 const express = require('express');
 const ServiceRecord = require('../models/ServiceRecord');
+const SparePart = require('../models/SparePart');
 const { auth, requireRole } = require('../middleware/auth');
 const router = express.Router();
+
+// Saves a spare part name to the master list if it's new — used so the
+// "Spare Part Used" autocomplete remembers manually-typed entries.
+async function rememberSparePart(name, user) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return;
+  try {
+    const existing = await SparePart.findOne({ name: new RegExp(`^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+    if (!existing) {
+      await new SparePart({ name: trimmed, addedBy: user._id, addedByName: user.fullName }).save();
+    }
+  } catch (e) { /* non-fatal — don't block the service record save */ }
+}
 
 // Get all service records — with sorting support
 router.get('/', auth, async (req, res) => {
   try {
-    const { status, branch, brand, category, search, page = 1, limit = 20, startDate, endDate, sortBy = 'createdAt', sortDir = 'desc' } = req.query;
+    const { status, branch, brand, category, search, srnNumber, page = 1, limit = 20, startDate, endDate, sortBy = 'createdAt', sortDir = 'desc' } = req.query;
     const filter = {};
 
     // Branch filter: coordinators/technicians/branch users only see their branch
@@ -19,6 +33,7 @@ router.get('/', auth, async (req, res) => {
     if (status)   filter.status = status;
     if (brand)    filter.brand = brand;
     if (category) filter.category = category;
+    if (srnNumber) filter['srn.srnNumber'] = { $regex: srnNumber, $options: 'i' };
     if (startDate || endDate) {
       filter.serviceDate = {};
       if (startDate) filter.serviceDate.$gte = new Date(startDate);
@@ -29,6 +44,7 @@ router.get('/', auth, async (req, res) => {
         { serviceNumber:    { $regex: search, $options: 'i' } },
         { brand:            { $regex: search, $options: 'i' } },
         { orionDescription: { $regex: search, $options: 'i' } },
+        { 'srn.srnNumber':  { $regex: search, $options: 'i' } },
         { 'technician.name':{ $regex: search, $options: 'i' } }
       ];
     }
@@ -166,8 +182,26 @@ router.patch('/:id', auth, requireRole('Service Coordinator', 'Head Office Team'
   try {
     const record = await ServiceRecord.findById(req.params.id);
     if (!record) return res.status(404).json({ error: 'Record not found.' });
+    if (req.user.userType === 'Service Coordinator' && record.branch !== req.user.branch) {
+      return res.status(403).json({ error: 'You do not have access to this record.' });
+    }
 
     const { status, remarks, technician, ...otherUpdates } = req.body;
+
+    // SRN fields become mandatory the moment Service Status is set to SRN.
+    // Merge onto whatever's already stored so previously-captured SRN data
+    // is retained for audit even if this update doesn't touch every field.
+    const incomingSrn = otherUpdates.srn;
+    const effectiveStatus = status || record.status;
+    if (effectiveStatus === 'SRN') {
+      const mergedSrn = { ...(record.srn ? record.srn.toObject?.() ?? record.srn : {}), ...(incomingSrn || {}) };
+      const required = ['srnNumber', 'customerInvoiceNumber', 'customerInvoiceDate', 'dealerInvoiceNumber', 'dealerInvoiceDate'];
+      const missing = required.filter(f => !mergedSrn[f]);
+      if (missing.length) {
+        return res.status(400).json({ error: `SRN status requires: ${missing.join(', ')}.` });
+      }
+      otherUpdates.srn = mergedSrn;
+    }
 
     if (status && status !== record.status) {
       record.statusHistory.push({
@@ -207,6 +241,49 @@ router.patch('/:id', auth, requireRole('Service Coordinator', 'Head Office Team'
     if (remarks !== undefined) record.remarks = remarks;
     Object.assign(record, otherUpdates);
     record.updatedBy = req.user._id;
+
+    if (otherUpdates.sparePartUsed) {
+      await rememberSparePart(otherUpdates.sparePartUsed, req.user);
+    }
+
+    await record.save();
+    res.json(record);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Happy Call / Customer Feedback ───────────────────────
+// One feedback record per closed service — stored on the service record.
+// Feedback button is Closed-only in the UI; the API also enforces it.
+router.patch('/:id/feedback', auth, requireRole('Service Coordinator', 'Head Office Team', 'System Administrator'), async (req, res) => {
+  try {
+    const record = await ServiceRecord.findById(req.params.id);
+    if (!record) return res.status(404).json({ error: 'Record not found.' });
+    if (record.status !== 'Closed') {
+      return res.status(400).json({ error: 'Feedback can only be recorded for Closed services.' });
+    }
+
+    const {
+      customerFeedback, remarks, resolution, productRating,
+      firstTimeUser, engineerRating, engineerCollectedMoney, amountCollected
+    } = req.body;
+
+    const isNew = !record.feedback || !record.feedback.submittedAt;
+    const prevSubmittedBy     = record.feedback && record.feedback.submittedBy;
+    const prevSubmittedByName = record.feedback && record.feedback.submittedByName;
+    const prevSubmittedAt     = record.feedback && record.feedback.submittedAt;
+    record.feedback = {
+      customerFeedback, remarks, resolution, productRating,
+      firstTimeUser, engineerRating, engineerCollectedMoney,
+      amountCollected: engineerCollectedMoney ? amountCollected : undefined,
+      submittedBy:     isNew ? req.user._id      : prevSubmittedBy,
+      submittedByName: isNew ? req.user.fullName : prevSubmittedByName,
+      submittedAt:     isNew ? new Date()         : prevSubmittedAt,
+      updatedBy:       isNew ? undefined : req.user._id,
+      updatedByName:   isNew ? undefined : req.user.fullName,
+      updatedAt:       isNew ? undefined : new Date(),
+    };
 
     await record.save();
     res.json(record);

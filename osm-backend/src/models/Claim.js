@@ -23,14 +23,27 @@ const claimSchema = new mongoose.Schema({
   partCodeNumber:   { type: String, trim: true },
   defectPhotos:     [{ type: String }], // stored as data URLs / uploaded image URLs
 
+  // Supplier / claim value information
+  unitValue: {
+    type: String,
+    trim: true,
+    validate: {
+      validator: v => v == null || v === '' || /^\d+(\.\d+)?$/.test(v),
+      message: 'Unit Value must be a valid number (e.g. 1200 or 1200.50).'
+    }
+  }, // monetary value of a single unit — kept as text to mirror the form's text field
+  supplierName:     { type: String, trim: true },
+  trackerNumber:    { type: String, trim: true }, // optional at creation; filled in later via Update Claim once received from supplier
+  compensationType: { type: String, enum: ['Credit Note', 'Spare Part'] },
+
   // Status information
-  status:           { type: String, enum: ['Accepted', 'Rejected'], default: 'Accepted' },
+  status:           { type: String, enum: ['Active', 'Pending', 'In Transit', 'Closed'], default: 'Pending' },
   resolutionStatus: { type: String, enum: ['Active', 'Closed'], default: 'Active' },
   supplyRemarks:    { type: String, trim: true },
 
   complaintDate:  { type: Date, required: true },
-  resolutionDate: { type: Date }, // auto-filled when Resolution Status -> Closed, if blank
-  // TAT is derived (Resolution Date − Complaint Date), stored in days, read-only
+  supplierApprovalDate: { type: Date }, // auto-filled when Resolution Status -> Closed, if blank (formerly "Resolution Date")
+  // TAT is derived (Supplier Approval Date − Complaint Date), stored in days, read-only
 
   branch:          { type: String, required: true },
   createdBy:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -47,8 +60,8 @@ claimSchema.index({ branch: 1, resolutionStatus: 1, createdAt: -1 });
 
 // Virtual — TAT in whole days, only meaningful once Closed with a resolution date
 claimSchema.virtual('tat').get(function () {
-  if (this.resolutionStatus !== 'Closed' || !this.resolutionDate || !this.complaintDate) return null;
-  const ms = new Date(this.resolutionDate) - new Date(this.complaintDate);
+  if (this.resolutionStatus !== 'Closed' || !this.supplierApprovalDate || !this.complaintDate) return null;
+  const ms = new Date(this.supplierApprovalDate) - new Date(this.complaintDate);
   return Math.max(0, Math.round(ms / (1000 * 60 * 60 * 24)));
 });
 claimSchema.set('toJSON', { virtuals: true });
@@ -90,12 +103,12 @@ claimSchema.pre('save', async function (next) {
     }
   }
 
-  // Resolution/TAT logic — auto-fill resolution date when moved to Closed
-  if (this.resolutionStatus === 'Closed' && !this.resolutionDate) {
-    this.resolutionDate = new Date();
+  // Resolution/TAT logic — auto-fill Supplier Approval Date when moved to Closed
+  if (this.resolutionStatus === 'Closed' && !this.supplierApprovalDate) {
+    this.supplierApprovalDate = new Date();
   }
   if (this.resolutionStatus === 'Active') {
-    this.resolutionDate = undefined;
+    this.supplierApprovalDate = undefined;
   }
 
   next();

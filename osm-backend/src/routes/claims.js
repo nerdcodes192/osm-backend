@@ -78,7 +78,7 @@ router.get('/', auth, async (req, res) => {
       ];
     }
 
-    const allowedSortFields = ['claimNumber', 'customerName', 'complaintDate', 'resolutionDate', 'status', 'resolutionStatus', 'branch', 'createdAt'];
+    const allowedSortFields = ['claimNumber', 'customerName', 'complaintDate', 'supplierApprovalDate', 'status', 'resolutionStatus', 'branch', 'createdAt'];
     const sortField = allowedSortFields.includes(sortBy) ? sortBy : 'createdAt';
     const sort = { [sortField]: sortDir === 'asc' ? 1 : -1 };
 
@@ -200,12 +200,13 @@ router.get('/export/csv', auth, async (req, res) => {
     const filter = req.user.userType === 'Service Coordinator' ? { branch: req.user.branch } : {};
     const claims = await Claim.find(filter).sort({ createdAt: -1 });
 
-    const headers = ['Claim Number','Customer Name','Location','Case ID','RMA','Brand','Category','Orion Code','Orion Description','Sub Category','Defect Component','Unit Serial Number','Defect Spare Parts','Part Code','Status','Resolution Status','TAT (days)','Complaint Date','Resolution Date','Branch','Supply Remarks','Created By'];
+    const headers = ['Claim Number','Customer Name','Location','Case ID','RMA','Brand','Category','Orion Code','Orion Description','Sub Category','Defect Component','Unit Serial Number','Defect Spare Parts','Part Code','Unit Value','Supplier Name','Tracker Number','Compensation Type','Status','Resolution Status','TAT (days)','Complaint Date','Supplier Approval Date','Branch','Supply Remarks','Created By'];
     const rows = claims.map(c => [
       c.claimNumber, c.customerName, c.location, c.caseId, c.rma, c.brand, c.category, c.orionCode, c.orionDescription, c.subCategory,
       c.defectComponent, c.unitSerialNumber, c.defectSpareParts, c.partCodeNumber,
+      c.unitValue, c.supplierName, c.trackerNumber, c.compensationType,
       c.status, c.resolutionStatus, c.tat ?? '', c.complaintDate?.toISOString().split('T')[0],
-      c.resolutionDate?.toISOString().split('T')[0], c.branch, c.supplyRemarks, c.createdByName
+      c.supplierApprovalDate?.toISOString().split('T')[0], c.branch, c.supplyRemarks, c.createdByName
     ]);
     const csv = [headers, ...rows].map(row => row.map(v => `"${(v ?? '')}"`).join(',')).join('\n');
     res.setHeader('Content-Type', 'text/csv');
